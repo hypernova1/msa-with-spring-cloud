@@ -187,3 +187,243 @@ MSA란 시스템을 여러개의 독립된 서비스로 나눈 후, 이 서비�
   * 동사 대신 명사를, 행위 대신 엔티티에 집중
   * REST는 기술 표준이 아닌 아키텍쳐 제약사항
   * 상태가 없고 요청이 자기 완비적이기 때문에 서비스도 수평적으로 쉽게 확장할 수 있다.
+
+
+## Netflix OSS
+
+* 50개 이상의 사내 프로젝트를 오픈 소스로 공개
+* 플랫폼(AWS) 안의 여러 컴포넌트와 자동화 도구를 사용하면서 파악한 패턴과 해결 방법을 블로그, 오픈 소스로 공개
+
+## Spring Cloud
+
+#### 모놀리식에서의 의존성 호출
+* 모놀리식에서의 의존성 호출은 100% 신뢰
+
+#### Failure as a First Class Citizen
+* 분산 시스템, 특히 클라우드 환경에서는 실패는 일반적인 표준이다.
+* 모놀리식엔 없던 장애 유형
+* 한 서비스의 가동률(uptime) 최대 99.99%
+  * 99.99^30 = 99.7% uptime
+  * 10억 요청 중 0.3% 실패 = 300만 요청이 실패
+  * 모든 서비스 들이 이상적인 uptime을 갖고 있어도 매 달마다 2시간 이상의 downtime이 발생
+
+## Hystrix -  Circuit Breaker
+
+* 톰캣의 기본 maxThread는 200개이다.
+* RestTemplate timeout의 기본 설정은 무한대이다.
+  * 한 번의 요청이 끝나기 전에는 스레드가 계속 요청을 붙잡고 있는다.
+  * 만약 톰캣 하나가 네트워크 장애가 발생하면 하면 무한정 대기를 하게 되는데, 200개가 꽉 차면 서버는 다운되게 된다.
+
+### Hystrix 적용하기
+
+~~~java
+@HysterixCommand
+public String anyMethodWithExternalDependency() {
+  URI uri = URI.create("http://172.32.1.22:8090/recommended");
+  String result = this.restTemplate.getForObject(uri, String.class);
+  return result;
+}
+~~~
+위의 메소드를 호출하면 HystrixCommand가 Intercept하여 대신 실행한다. 실행된 결과의 성공/실패(Exception) 여부를 기록하고 통계를 낸다. 실행 결과 통계에 따라 Circuit Open 여부를 판단하고 필요한 조치를 취한다.
+
+#### Circuit Open이란
+  * Circuit이 오픈된 Method는 주어진 시간동안 호출이 제한되며, 즉시 에러를 반환한다.
+  * 특정 메소드에서 지연이(주로 외부 연동에서의 지연) 시스템 전체의 Resource(Thread, Memory)를 모두 소모하여 시스템 전체의 장애를 유발한다.
+  * 특정 외부 시스템에서 계속 에러를 발생 시킨다면, 지속적인 호출이 에러 상황을 더욱 악화시킨다.
+  * 장애를 유발하는 (외부) 시스템에 대한 연동을 조기에 차단시킴으로서 시스템을 보호한다.
+  * 기본 설정
+    * 10초동안 20개 이상의 호출이 발생했을 때, 50% 이상의 호출에서 에러가 발생하면 Circuit Open
+
+Circuit이 오픈된 경우 Fallback이 호출된다. Fallback 메소드는 Circuit이 오픈된 경우, 혹은 Exception이 발생한 경우에 대신 호출될 메소드이며, 장애 발생시 Exception대신 응답할 Default 구현을 넣는다.
+
+~~~java
+@HistrixCommand(commandKey = "ExtDep1", fallbackMethod = "recommendFallback")
+public String anyMethodWithExternalDependency1() {
+  URI uri = URI.create("http://172.32.1.22:8090/recommended");
+  String result = this.restTemplate.getForObject(uri, String.class);
+  return result;
+}
+
+public String recommendFallback() {
+  return "No recommend available";
+}
+~~~
+
+#### 오랫동안 응답이 없는 메소드 처리방법 - Timeout
+~~~java
+@HystrixCommand(commandKey = "ExtDep1", fallbackMethod= "recommendFallback",
+  commandProperties = {
+    @HystrixProperty(name = "execution.isolation.thread.timeoutInMiliseconds", value = "500")
+
+})
+public String anyMethodWithExternalDependency1() {
+  URI uri = URI.create("http://172.32.1.22:8090/recommended");
+  String result = this.restTemplate.getForObject(uri, String.class);
+  return result;
+}
+
+public String recommendFallback() {
+  return "No recommend available";
+}
+~~~
+
+* 설정하지 않으면 default는 1000ms
+* 설정 시간동안 메소드가 끝나지 않으면 return/exception
+* Hystrix 메소드를 실제 실행중인 Thread의 interrupt를 호출하고, 자신은 즉시 HystrixException을 발생시킨다.
+  * 이 경우에도 Fallback이 있다면 Fallback 실행
+
+
+## 실습 - Hystrix 사용하기
+
+### 배경
+* Display 서비스는 외부 Server인 Product API와 연동되어 있음
+* Product API에 장애가 나더라도 Display의 다른 서비스는 이상없이 작동해야 한다.
+* Product API에 응답 오류가 발생한 경우, Default값을 넣어준다.
+### 결정 내용
+* Display - Product 연동 구간에 Circuit Breaker를 적용
+
+### 사용 순서
+1. [display] gradle.build에 의존성 추가
+  ~~~
+  compile('org.springframework.cloud:spring-cloud-starter-netflix-hystrix')
+  ~~~
+2. `DisplayApplication`에 `@EnableCircuitBreaker` 추가
+~~~java
+@EnableCircuitBreaker
+@SpringBootApplication
+public class DisplayApplication {
+~~~
+3. [display] `DisplayRemoteServiceImpl`에 `@HystrixCommand` 추가
+~~~java
+@Override
+@HystrixCommand
+public String getProductInfo(String productId) {
+  return restTemplate.getForObject(URL + productId, String.class);
+}
+~~~
+
+4. [product] `ProductController`에서 항상 Exception을 던지게 수정(장애 상황 흉내)
+~~~java
+@GetMapping("/{productId}")
+    public String getProduct(@PathVariable String productId) {
+        throw new RuntimeException("I/O Exception");
+        //return "[product id = " + productId + " at " + System.currentTimeMillis() + "]";
+    }
+~~~
+
+5. [display] `ProductRemoteServiceImpl`에 FallbackMethod 작성
+~~~java
+@Override
+@HystrixCommand(fallbackMethod = "getProductInfoFallback")
+public String getProductInfo(String productId) {
+  return restTemplate.getForObject(URL + productId, String.class);
+}
+
+public String getProductInfoFallback(String productId) {
+  return "[This Product is sold out]";
+}
+~~~
+
+6. 확인
+~~~
+http://localhost:8082/product/22222
+http://localhost:8081/display/11111
+~~~
+
+* Histrix가 발생한 Exception을 잡아서 Fallback을 실행. Fallback 정의 여부와 상관없이 Circuit 오픈 여부 판단을 위한 에러 통계는 계산하고 있지만 아직 Circuit은 오픈된 상태가 아님
+
+7. Fallback 원인 출력하기
+* Fallback메소드 파라미터에 `Throwable` 추가 및 출력
+~~~java
+public String getProductInfoFallback(String productId, Throwable t) {
+  System.out.println("t=" + t);
+  return "[This Product is sold out]";
+}
+~~~
+* 결과
+~~~
+t=org.springframework.web.client.HttpServerErrorException: 500 null
+~~~
+
+## Hystrix로 Timeout 처리하기
+`@HystrixCommand`로 표시된 메소드는 지정된 시간 안에 반환되지 않으면 자동으로 Exception이 발생 (기본 설정: 1000ms)
+
+1. 2초가 걸리는 작업 테스트
+~~~java
+@GetMapping("/{productId}")
+public String getProduct(@PathVariable String productId) {
+  try {
+    Thread.sleep(2000);
+  } catch (InterruptedException e) {
+    e.printStackTrace();
+  }
+//throw new RuntimeException("I/O Exception");
+  System.out.println("Called product id: " + productId);
+  return "[product id = " + productId + " at " + System.currentTimeMillis() + "]";
+}
+~~~
+
+2. 확인
+* 호출하는 쪽(display)에서는 1초가 지났기 때문에 exception을 띄우지만, 호출을 받는 쪽에선 정상적으로 `System.out.println`이 실행 된다.
+
+3. [display] application.yml을 수정하여 Hystrix Timeout 시간 조정하기
+~~~yaml
+hystrix:
+  command:
+    default:
+      execution:
+        isolation:
+          thread:
+            timeoutInMilliseconds: 3000
+~~~
+
+4. 확인
+* 정상적으로 호출이 된다.
+~~~
+[display id = 11111 at 1593527795635 [product id = 1111 at 1593527795625] ]
+~~~
+
+5. 정리
+* Hystix를 통해 실행되는 모든 메소드는 정해진 응답시간 내에 반환되어야 한다.
+* 그렇지 못한 경우, Exception이 발생하며, Fallback이 정의된 경우 Fallback이 수행된다.
+* Timeout은 조절 가능하다.
+* 모든 외부 연동은 최대 응답 시간을 가정할 수 있어야 한다.
+* 여러 연동을 사용하는 경우 최대 응답 시간을 직접 Control하는 것은 불가능하다.
+  * 다양한 timeout, 다양한 지연 등)
+
+## Hystrix Circuit Open 테스트
+
+1. [display] application.yml에 Hystrix 프로퍼티 추가
+~~~yaml
+hystrix:
+  command:
+    default:
+      execution:
+        isolation:
+          thread:
+            timeoutInMilliseconds: 3000
+      circuitBreaker:
+        requestVolumeThreshold: 1 # default: 20
+        errorThresholdPercentage: 50 # default: 50
+~~~
+* 1번의 요청이 실패하면 Circuit Open이 발생하도록 설정
+
+* `ProductController` 수정
+~~~java
+    @GetMapping("/{productId}")
+    public String getProduct(@PathVariable String productId) {
+//    try {
+//      Thread.sleep(2000);
+//    } catch (InterruptedException e) {
+//      e.printStackTrace();
+//    }
+      throw new RuntimeException("I/O Exception");
+//    System.out.println("Called product id: " + productId);
+//    return "[product id = " + productId + " at " + System.currentTimeMillis() + "]";
+    }
+~~~
+
+* 결과
+~~~
+t=java.lang.RuntimeException: Hystrix circuit short-circuited and is OPEN
+~~~
