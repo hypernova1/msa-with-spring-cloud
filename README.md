@@ -428,6 +428,7 @@ hystrix:
 t=java.lang.RuntimeException: Hystrix circuit short-circuited and is OPEN
 ~~~
 
+
 ## Server Side LoadBalancer
 * 일반적인 L4 스위치 기반의 로드밸런싱
 * 클라이언트는 L4의 주소만 알고 있음
@@ -438,7 +439,7 @@ t=java.lang.RuntimeException: Hystrix circuit short-circuited and is OPEN
   * Load Balancing Schema가 한정적 (Round Robin, Sticky)
 * Twelve Factors의 개발/운영 일치를 만족하기 어려움
 
-## Ribbon - Client Side Load Balancer
+## Ribbon - Client Load Balancer
 * 클라이언트(API Caller)에 탑재되는 소프트웨어 모듈
 * 주어진 서버 목록에 대해서 로드밸런싱을 수행함
 * Ribbon의 장점
@@ -517,3 +518,83 @@ product:
 * Ribbon에는 Retry 기능이 내장되어있다.
 * Eureka와 함께 사용될 때 강력하다.
 
+### Ribbon 예제에서 서버 목록을 yml에 직접 넣었는데 자동화 하는 방법은?
+
+## Eureka - Service Discovery
+
+* Service Registry
+  * 서비스 탐색, 등록
+  * 클라우드의 전화번호부
+  * 단점: 침투적 방식 코드 변경
+
+* DiscoveryClient
+  * Spring Cloud는 서비스 레지스트리 사용 부분을 추상화함(interface)
+  * Eureka, Consul, Zookeeper, etcd 등의 구현체가 존재
+
+* Ribbon은 Eureka와 결합하여 사용될 수 있으며, 서버 목록을 자동으로 관리해준다.
+
+### Eureka in Spring Cloud
+* 서버 시작 시 Eureka Server(Registry)에 자동으로 자신의 상태를 등록(UP)
+  * eureka.client.register-with-eureka: true(default)
+* 주기적으로 Heart Beat로 Eureka Server에 자신이 살아있음을 알림
+  * eureka.instance.lease-renewal-interval-in-seconds: 30(default)
+* 서버 종료 시 Eureka Server에 자신의 상태 변경(DOWN) 혹은 자신의 목록 삭제
+* Eureka 상에 등록된 이름은 'spring.application.name'
+
+### Eureka Server(Registry) 만들기
+
+1. [product, display] `build.gradle`에 의존성 추가
+~~~
+compile('org.springframework.cloud:spring-cloud-starter-netflix-eureka-client')
+~~~
+
+2. [product, display] 메인 클래스에 `@EnableEurekaClient`추가
+~~~java
+@EnableEurekaClient
+@SpringBootApplication
+public class ProductApplication {
+//...
+@EnableEurekaClient
+@EnableCircuitBreaker
+@SpringBootApplication
+public class DisplayApplication {
+//...
+~~~
+
+3. [product, display] `application.yml`에 설정 추가
+~~~yaml
+eureka:
+  instance:
+    prefer-ip-address: true
+  client:
+    service-url: 
+      defaultZone: http://127.0.0.1:8761/eureka # default address
+~~~
+
+4. 확인
+* http://localhost:8761/에 접속하여 두 인스턴스가 등록되어 있는지 확인
+
+
+### RestTemplate에 Eureka 적용하기
+
+#### 목적
+Diplay -> Product 호출시에 Eureka를 적용하여 ip 주소를 코드나 설정 모두에서 제거
+
+[display] `application.yml` 변경
+~~~yaml
+product:
+  ribbon:
+    # listOfServers: localhost:8082, localhost:7777 # 주석 처리
+    MaxAutoRetries: 0
+    MaxAutoRetriesNextServer: 1
+~~~
+* 서버 주소를 Eureka Server에서 가져오게 함
+
+### Eureka 서버 주소 직접 명시
+* `@EnableEurekaServer` / `@EnableEurekaClient`를 통하여 서버 구축, 클라이언트 Enable 가능
+* `@EnableEurakeClient`를 붙인 Applicaion은 Eureka 서버로 부터 남의 주소를 가져오는 역할과, 자신의 주소를 등록하는 역할 둘 다 수행 가능
+* Eureka Client가 Eureka Server에 자신을 등록할 때 `spring.application.name`이 이름으로 사용된다.
+
+### 이중화 테스트
+
+1. (Intellij 기준) Product 프로젝트를 톰캣 설정에서 복사 후 VM Options에 `-Dserver.port=8083`를 입력하여 Product를 추가로 하나 더 띄움(Eureka 서비스 레지스트리에 인스턴스(8083)가 추가로 들어감)
