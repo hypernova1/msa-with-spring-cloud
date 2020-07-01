@@ -11,14 +11,15 @@
 * Netflix OSS, Spring Cloud를 통해 MSA를 구축한다.
 
 ### 목차
-* [기존 모놀리식 방식의 개발](##기존-모놀리식-방식의-개발)
-* [MSA(Microservice Architecture)](##MSAMicroservice-Architecture)
-* [Cloud Native](##Cloud-Native)
-* [Spring Cloud](##Spring-Cloud)
-* [Server Side LoadBalancer](##Server-Side-LoadBalancer)
-* [Hystrix](##HystrixCircuit-Breaker)
-* [Ribbon](##RibbonClient-Load-Balancer)
-* [Eureka](##EurekaService-Discovery)
+* [기존 모놀리식 방식의 개발](#기존-모놀리식-방식의-개발)
+* [MSA(Microservice Architecture)](#MSAMicroservice-Architecture)
+* [Cloud Native](#Cloud-Native)
+* [Spring Cloud](#Spring-Cloud)
+* [Server Side LoadBalancer](#Server-Side-LoadBalancer)
+* [Hystrix](#HystrixCircuit-Breaker)
+* [Ribbon](#RibbonClient-Load-Balancer)
+* [Eureka](#EurekaService-Discovery)
+* [Feign](#FeignDeclarative-Http-Client)
 
 ## 기존 모놀리식 방식의 개발
 
@@ -607,3 +608,138 @@ product:
 ### 이중화 테스트
 
 1. (Intellij 기준) Product 프로젝트를 톰캣 설정에서 복사 후 VM Options에 `-Dserver.port=8083`를 입력하여 Product를 추가로 하나 더 띄움(Eureka 서비스 레지스트리에 인스턴스(8083)가 추가로 등록됨)
+
+## Feign(Declarative Http Client)
+* Interface 선언을 통해 자동으로 Http Client를 생성
+* RestTemplate는 concreate 클래스라 테스트하기 어렵다.
+* 관심사의 분리
+  * 서비스 관심 - 다른 리소스, 외부 서비스 호출과 리턴 값
+  * 관심이 없는 것 들 - 어떤 URL, 어떻게 파싱할 것인가
+* Spring Cloud에서 Open-Feign 기반으로 Wrapping 한 것이 Spring Cloud Feign
+* url을 명시하게 되면 Robbin, Eureka, Hystrix를 사용하지 않는다.
+  * 순수 Feign Client로서만 동작
+  * url을 명시하지 않으면 Eureka에서 product 서버 목록을 조회해서 Ribbon을 통해 로드밸런싱을 하면서 HTTP 호출을 수행
+
+### Feign 클라이언트 사용하기
+#### 목적
+* Display에서 Product 호출시 Feign을 사용하여 RestTemplate 대체
+
+1. [display] `build.gradle`에 의존성 추가
+~~~
+compile('org.springframework.cloud:spring-cloud-starter-openfeign')
+~~~
+
+2. [display] `DisplayApplication`에 `@EnableFeignClients` 추가
+~~~java
+@EnableEurekaClient
+@EnableCircuitBreaker
+@EnableFeignClients
+@SpringBootApplication
+public class DisplayApplication {
+~~~
+
+3. [display] Feign용 Interface 추가
+~~~java
+@FeignClient(name = "product", url = "http://localhost:8082")
+public interface FeignProductRemoteService {
+    @RequestMapping(value = "/products/{productId}")
+    String getProductInfo(@PathVariable String productId);
+}
+~~~
+* `@FeignClient`는 내부적으로 Robbin으로 구현되어있기 때문에 url을 지우게 되면 Eureka를 사용하게 된다.
+
+4. [display] `DisplayController` 변경
+~~~java
+ @GetMapping(path = "/{displayId}")
+public String getDisplayDetail(@PathVariable String displayId) {
+    String productInfo = getProductInfo();
+//        String productInfo = productRemoteService.getProductInfo("1111");
+    return String.format("[display id = %s at %s %s ]", displayId, System.currentTimeMillis(), productInfo);
+}
+
+private String getProductInfo() {
+    return feignProductRemoteService.getProductInfo("12345");
+}
+~~~
+
+### Feign + Hystrix
+* [display] `application.yml` 설정 추가
+~~~yaml
+feign:
+  hystrix:
+    enabled: true
+~~~
+
+### Hystrix Fallback 사용하기
+* Feign으로 정의한 Interface를 직접 구현하고 Spring Bean으로 선언
+~~~java
+@Component
+public class ProductResourceFallback implements ProductResource {
+  @Override
+  public String getItemDetail(String itemId) {
+    return "default value";
+  }
+}
+
+@FeignClient(fallback=ProductResourceFallback.class, name="dp", url="http://localhost:8080/")
+public interface ProductResource {
+  @RequestMapping(value="/query/{itemId}")
+  String getItemDetail(@PathVariable String itemId);
+} 
+~~~
+* 단점
+  * 에러가난 원인을 알 수 없다.
+    * 인터페이스를 상속한 클래스이기 때문에 에러를 넣을 부분이 없다. (시그니처가 같아야 하기 때문에)
+* 대안
+  * FallbackFactory 사용
+
+### Fallback Factory 사용하기
+
+~~~java
+@Component
+public class FeignProductRemoteServiceFallbackFactory implements FallbackFactory<FeignProductRemoteService> {
+    @Override
+    public FeignProductRemoteService create(Throwable cause) {
+        System.out.println("t = " + cause);
+        return productId -> "[ this product id sold out ]";
+    }
+}
+~~~
+
+### Fiegn용 Hystrix 프로퍼티 정의하기
+
+[display] `application.yml` 설정 추가
+~~~yaml
+hystrix:
+  command:
+    ProductInfo: # commandKey 이름 주의 'default'는 글로벌 설정임
+      execution:
+        isolation:
+          thread:
+            timeoutInMilliseconds: 3000
+      circuitBreaker:
+        requestVolumeThreshold: 1 # default: 20
+        errorThresholdPercentage: 50 # default: 50
+    FeignProductRemoteService#getProductInfo(String): # 함수명과 인자를 적어줌
+      execute:
+        isolation:
+          thread:
+            timeoutInMilliseconds: 3000
+      circuitBreaker:
+        requestVolumeThreshold: 1
+        errorThresholdPercentage: 50
+~~~
+
+### 정리
+* Hystrix를 통한 메소드별 Circuit Breaker
+  * Hystrix를 사용하려면 추가 설정 필요
+* Eureka 타겟 서버 주소 획득
+* Robbin을 통한 Client-Side Load Balancing
+
+### 장애 유형별 동작 예
+#### 특정 API 서버의 인스턴스가 한개 Down 된 경우
+* Eureka: HeartBeat 송신이 중단 됨으로 인해 일정 시간 후 목록에서 사라짐
+* Ribbon: IOException이 발생한 경우 다른 인스턴스로 Retry
+* Hystrix: Circuit은 오픈되지 않음(error = 33%), Fallback, Timeout은 동작
+
+#### 특정 API가 비정상적으로 동작하는 경우(지연, 에러)

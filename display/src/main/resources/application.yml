@@ -7,7 +7,7 @@ spring:
 
 hystrix:
   command:
-    default:
+    ProductInfo: # commandKey 이름 주의 'default'는 글로벌 설정임
       execution:
         isolation:
           thread:
@@ -15,6 +15,14 @@ hystrix:
       circuitBreaker:
         requestVolumeThreshold: 1 # default: 20
         errorThresholdPercentage: 50 # default: 50
+    FeignProductRemoteService#getProductInfo(String): # 함수명과 인자를 적어줌
+      execute:
+        isolation:
+          thread:
+            timeoutInMilliseconds: 3000
+      circuitBreaker:
+        requestVolumeThreshold: 1
+        errorThresholdPercentage: 50
 
 product:
   ribbon:
@@ -28,3 +36,8 @@ eureka:
   client:
     service-url:
       defaultZone: http://127.0.0.1:8761/eureka
+
+
+feign:
+  hystrix:
+    enabled: true
