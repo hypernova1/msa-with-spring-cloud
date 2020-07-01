@@ -10,7 +10,17 @@
 * Cloud Native한 MSA를 이해한다
 * Netflix OSS, Spring Cloud를 통해 MSA를 구축한다.
 
-### 기존 모놀리식 방식의 개발
+### 목차
+* [기존 모놀리식 방식의 개발](##기존-모놀리식-방식의-개발)
+* [MSA(Microservice Architecture)](##MSAMicroservice-Architecture)
+* [Cloud Native](##Cloud-Native)
+* [Spring Cloud](##Spring-Cloud)
+* [Server Side LoadBalancer](##Server-Side-LoadBalancer)
+* [Hystrix](##HystrixCircuit-Breaker)
+* [Ribbon](##RibbonClient-Load-Balancer)
+* [Eureka](##EurekaService-Discovery)
+
+## 기존 모놀리식 방식의 개발
 
 신규 프로젝트가 시작되면 개발자가 개발한 코드는 하나의 톰캣에서 실행되고 프로그램의 상태는 하나의 DB에 저장된다. 그리고 개발자들은 협업을 위하여 형상관리 툴(svn, git 등)을 사용한다. 하지만 현재는 상용 배포시 톰캣 하나, 데이터베이스 하나를 이용하기 때문에 무중단 배포가 불가능하다.  
 
@@ -51,7 +61,7 @@
 2. MSA 플랫폼을 구축하여 기존 레거시를 고시시킴
 
 
-## MSA
+## MSA(Microservice Architecture)
 
 MSA란 시스템을 여러개의 독립된 서비스로 나눈 후, 이 서비스를 조합함으로서 기능을 제공하는 아키텍쳐 디자인 패턴이다. 현재까지 공식적인 정의는 없지만 다음과 같은 공감대가 존재한다.
 
@@ -87,7 +97,7 @@ MSA란 시스템을 여러개의 독립된 서비스로 나눈 후, 이 서비�
 * 무상태(State-less): 각 서비스의 상태는 무상태
 
 
-## DevOps
+### DevOps
 
 #### 전통적 모델
 * 개발과 운영 조직의 분리
@@ -97,7 +107,7 @@ MSA란 시스템을 여러개의 독립된 서비스로 나눈 후, 이 서비�
 * 개별 팀은 프로젝트 그룹이 아닌, 제품 그룹에 소속
 * 운영과 제품 관리 모두가 포함되는 조직적 구조. 제품 팀은 소프트웨어를 만들고 운영하는 데 필요한 모든 것을 보유
 
-## [Twelve-Factors](https://12factor.net/ko/)
+### [Twelve-Factors](https://12factor.net/ko/)
 
 * Heroku 클라우드 플랫폼 창시자들이 정립한 애플리케이션 개발 원칙 중 유익한 것을 모아 정리한 것
 * 탄력적(elastic)이고 이식성(portability) 있는 배포를 위한 Best Practice
@@ -176,7 +186,7 @@ MSA란 시스템을 여러개의 독립된 서비스로 나눈 후, 이 서비�
 * 실행되는 프로세스와 동일한 환경에서 실행
 * admin 코드는 애플리케이션 코드와 함께 배포되어야 한다.
 
-## HTTP, REST API
+### HTTP, REST API
 보통 MSA 구축할 때 REST를 많이 사용한다.
 
 * HTTP
@@ -188,8 +198,7 @@ MSA란 시스템을 여러개의 독립된 서비스로 나눈 후, 이 서비�
   * REST는 기술 표준이 아닌 아키텍쳐 제약사항
   * 상태가 없고 요청이 자기 완비적이기 때문에 서비스도 수평적으로 쉽게 확장할 수 있다.
 
-
-## Netflix OSS
+### Netflix OSS
 
 * 50개 이상의 사내 프로젝트를 오픈 소스로 공개
 * 플랫폼(AWS) 안의 여러 컴포넌트와 자동화 도구를 사용하면서 파악한 패턴과 해결 방법을 블로그, 오픈 소스로 공개
@@ -207,7 +216,7 @@ MSA란 시스템을 여러개의 독립된 서비스로 나눈 후, 이 서비�
   * 10억 요청 중 0.3% 실패 = 300만 요청이 실패
   * 모든 서비스 들이 이상적인 uptime을 갖고 있어도 매 달마다 2시간 이상의 downtime이 발생
 
-## Hystrix -  Circuit Breaker
+## Hystrix(Circuit Breaker)
 
 * 톰캣의 기본 maxThread는 200개이다.
 * RestTemplate timeout의 기본 설정은 무한대이다.
@@ -273,16 +282,16 @@ public String recommendFallback() {
   * 이 경우에도 Fallback이 있다면 Fallback 실행
 
 
-## 실습 - Hystrix 사용하기
+### 실습 - Hystrix 사용하기
 
-### 배경
+#### 배경
 * Display 서비스는 외부 Server인 Product API와 연동되어 있음
 * Product API에 장애가 나더라도 Display의 다른 서비스는 이상없이 작동해야 한다.
 * Product API에 응답 오류가 발생한 경우, Default값을 넣어준다.
-### 결정 내용
+#### 결정 내용
 * Display - Product 연동 구간에 Circuit Breaker를 적용
 
-### 사용 순서
+#### 사용 순서
 1. [display] gradle.build에 의존성 추가
   ~~~
   compile('org.springframework.cloud:spring-cloud-starter-netflix-hystrix')
@@ -345,7 +354,7 @@ public String getProductInfoFallback(String productId, Throwable t) {
 t=org.springframework.web.client.HttpServerErrorException: 500 null
 ~~~
 
-## Hystrix로 Timeout 처리하기
+### Hystrix로 Timeout 처리하기
 `@HystrixCommand`로 표시된 메소드는 지정된 시간 안에 반환되지 않으면 자동으로 Exception이 발생 (기본 설정: 1000ms)
 
 1. 2초가 걸리는 작업 테스트
@@ -391,7 +400,7 @@ hystrix:
 * 여러 연동을 사용하는 경우 최대 응답 시간을 직접 Control하는 것은 불가능하다.
   * 다양한 timeout, 다양한 지연 등)
 
-## Hystrix Circuit Open 테스트
+### Hystrix Circuit Open 테스트
 
 1. [display] application.yml에 Hystrix 프로퍼티 추가
 ~~~yaml
@@ -439,7 +448,7 @@ t=java.lang.RuntimeException: Hystrix circuit short-circuited and is OPEN
   * Load Balancing Schema가 한정적 (Round Robin, Sticky)
 * Twelve Factors의 개발/운영 일치를 만족하기 어려움
 
-## Ribbon - Client Load Balancer
+## Ribbon(Client Load Balancer)
 * 클라이언트(API Caller)에 탑재되는 소프트웨어 모듈
 * 주어진 서버 목록에 대해서 로드밸런싱을 수행함
 * Ribbon의 장점
@@ -520,7 +529,7 @@ product:
 
 ### Ribbon 예제에서 서버 목록을 yml에 직접 넣었는데 자동화 하는 방법은?
 
-## Eureka - Service Discovery
+## Eureka(Service Discovery)
 
 * Service Registry
   * 서비스 탐색, 등록
@@ -597,4 +606,4 @@ product:
 
 ### 이중화 테스트
 
-1. (Intellij 기준) Product 프로젝트를 톰캣 설정에서 복사 후 VM Options에 `-Dserver.port=8083`를 입력하여 Product를 추가로 하나 더 띄움(Eureka 서비스 레지스트리에 인스턴스(8083)가 추가로 들어감)
+1. (Intellij 기준) Product 프로젝트를 톰캣 설정에서 복사 후 VM Options에 `-Dserver.port=8083`를 입력하여 Product를 추가로 하나 더 띄움(Eureka 서비스 레지스트리에 인스턴스(8083)가 추가로 등록됨)
