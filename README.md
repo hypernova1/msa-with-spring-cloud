@@ -197,7 +197,7 @@ MSA란 시스템을 여러개의 독립된 서비스로 나눈 후, 이 서비�
 ## Spring Cloud
 
 #### 모놀리식에서의 의존성 호출
-* 모놀리식에서의 의존성 호출은 100% 신뢰
+* 모놀리식에서의 의존성 호출은 100% 신뢰할 수 있다.
 
 #### Failure as a First Class Citizen
 * 분산 시스템, 특히 클라우드 환경에서는 실패는 일반적인 표준이다.
@@ -427,3 +427,93 @@ hystrix:
 ~~~
 t=java.lang.RuntimeException: Hystrix circuit short-circuited and is OPEN
 ~~~
+
+## Server Side LoadBalancer
+* 일반적인 L4 스위치 기반의 로드밸런싱
+* 클라이언트는 L4의 주소만 알고 있음
+* L4 스위치는 서버의 목록을 알고 있음(Server Side Load Balancing)
+* H/W Server Side Load Balancer의 단점
+  * 하드웨어가 필요
+  * 서버 목록의 추가를 위해서는 설정이 필요(자동화가 어려움)
+  * Load Balancing Schema가 한정적 (Round Robin, Sticky)
+* Twelve Factors의 개발/운영 일치를 만족하기 어려움
+
+## Ribbon - Client Side Load Balancer
+* 클라이언트(API Caller)에 탑재되는 소프트웨어 모듈
+* 주어진 서버 목록에 대해서 로드밸런싱을 수행함
+* Ribbon의 장점
+  * 하드웨어가 필요없이 소프트웨어만으로 가능
+  * 서버 목록의 동적 변경이 자유로움
+  * Load Balancing Schema를 마음대로 구성 가능
+
+### 실습 - RestTemplate에 Ribbon 적용
+
+1. [product] `ProductController`를 정상적인 코드로 복원
+~~~java
+@GetMapping("/{productId}")
+public String getProduct(@PathVariable String productId) {
+//        throw new RuntimeException("I/O Exception");
+    return "[product id = " + productId + " at " + System.currentTimeMillis() + "]";
+}
+~~~
+
+2. [display] `build.gradle`에 의존성 추가
+~~~
+compile('org.springframework.cloud:spring-cloud-starter-netflix-ribbon')
+~~~
+
+3. [display] `DisplayApplication`의 `RestTemplate`빈에 `@LoadBalanced` 추가
+~~~java
+@Bean
+@LoadBalanced
+public RestTemplate restTemplate() {
+    return new RestTemplate();
+}
+~~~
+* `@LoadBalanced`를 붙이면 내부적으로 `RestTemplate`에 `Interceptor`를 추가해준다. 그 후 `Interceptor`안에서 product를 `application.yml`에 있는 `listOfServers`의 값으로 변경해준다.
+
+4. [display] `ProductRemoteServiceImpl`에서 주소를 제거하고 `product`로 변경
+~~~java
+//    public static String URL = "http://localhost:8082/products/";
+public static String URL = "http://product/products/";
+~~~
+
+5. [display] `application.yml`에 ribbon 설정 넣기
+~~~yaml
+product:
+  ribbon:
+    listOfServers: localhost:8082
+~~~
+
+### Ribbon의 Retry 기능
+1. [display] `build.gradle`에 의존성 추가
+~~~
+compile('org.springframework.retry:spring-retry:1.2.2.RELEASE')
+~~~
+
+2. [display] `application.yml`에서 서버 주소 추가 및 Retry 관련 속성 조정
+~~~yaml
+product:
+  ribbon:
+    listOfServers: localhost:8082, localhost:7777
+    MaxAutoRetries: 0
+    MaxAutoRetriesNextServer: 1
+~~~
+
+3. 확인
+* localhost:7777은 없는 주소이므로 Exception이 발생하지만 Ribbon Retry로 항상 성공함
+  * Round Robin Cliend Load Balancing & Retry
+
+4. 주의
+* Histrix로 Ribbon을 감싸서 호출한 상태이기 때문에 Retry를 시도하다가 HistrixTimeout이 발생하면, 즉시 에러가 반환된다.
+* Retry를 끄거나 재시도 횟수를 0으로 만들어도 해당 서버로의 호출이 항상 동일한 비율로 실패하지는 않는다. 
+  * 실패한 서버로의 호출은 특정 시간동안 Skip 되고 그 간격은 조정된다(BackOff)
+* classpath에 Retry가 존재해야 한다.
+
+5. 정리
+* Ribbon은 여러 컴포넌트에 내장되어 있으며, 이를 통해 Client Side Load Balancing이 수행 가능하다.
+* Ribbon은 매우 다양한 설정이 가능하다.
+  * 서버 선택, 실패시 Skip 시간, Ping 체크
+* Ribbon에는 Retry 기능이 내장되어있다.
+* Eureka와 함께 사용될 때 강력하다.
+
