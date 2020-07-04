@@ -20,6 +20,7 @@
 * [Ribbon](#RibbonClient-Load-Balancer)
 * [Eureka](#EurekaService-Discovery)
 * [Feign](#FeignDeclarative-Http-Client)
+* [Zuul](#Zuul)
 
 ## 기존 모놀리식 방식의 개발
 
@@ -743,3 +744,172 @@ hystrix:
 * Hystrix: Circuit은 오픈되지 않음(error = 33%), Fallback, Timeout은 동작
 
 #### 특정 API가 비정상적으로 동작하는 경우(지연, 에러)
+* Hystrix: 해당 API를 호출하는 Circuit Breaker 오픈. Fallback, Timeout도 동작
+
+
+## Zuul
+* Zuul의 모든 API 요청은 HystrixCommand로 구성되어 전달된다.
+  * 각 API 경로 (서버군) 별로 Circuit Breaker 생성
+  * 하나의 서버군이 장애를 일으켜도 다른 서버군의 서비스에는 영향이 없다.
+  * CircuitBreaker/ThreadPool의 다양한 속성을 통해 서비스 별 속성에 맞는 설정 가능
+
+* API를 전달할 서버의 목록을 갖고 Ribbon을 통해 로드밸런싱을 수행한다.
+  * 주어진 서버 목록들을 Round Bobin으로 호출
+  * 코딩을 통해 로드밸런싱 방식을 커스터마이징 가능
+
+* Euraka Client를 사용하여 주어진 URL의 호출을 전달할 서버 리스트를 찾는다.
+  * Zuul에는 Eureka Client가 내장되어 있음
+  * 각 URL에 매핑된 서비스 명을 찾아서 Eureka Server를 통해 목록을 조회한다.
+  * 조회된 서버 목록을 Ribbon 클라이언트에게 전달한다.
+
+* Eureka + Ribbon에 의해 결정된 서버 주소로 HTTP 요청
+  * Apache Http Client가 기본으로 사용됨
+  * OKHttp Client 사용 가능
+
+* 선택된 첫 서버로의 호출이 실패할 경우 Ribbon에 의해서 자동으로 Retry 수행
+  * Retry 수행 조건
+    * Http Client에서 Exception 발생 (IOException)
+    * 설정된 HTTP 응답코드 반환 (ex. 503)
+
+### API Gateway
+* 클라이언트와 백엔드 서버 사이의 출입문(front door)
+* 라우팅(라우팅, 필터링, API 변환, 클라이언트 어댑터 API, 서비스 프록시)
+* 횡단 관심사 (cross-service concerns)
+  * 보안/인증(Authentication), 인가(Authorization)
+  * 일정량 이상의 요청 제한(rate limiting)
+  * 계측(metering)
+
+![api gateway](https://docs.microsoft.com/ko-kr/azure/architecture/microservices/images/gateway.png)
+
+### Netflix Zuul
+* 마이크로 프록시
+* 50개 이상의 AWS ELB의 앞단에 위치해 3개의 AWS 리전에 걸쳐 하루 백억 이상의 요청 처리(2015년 기준)
+
+### 실습
+
+1. [zuul] `gradle.build`에 의존성 추가
+~~~
+ compile('org.springframework.retry:spring-retry:1.2.2.RELEASE')
+    compile('org.springframework.cloud:spring-cloud-starter-netflix-zuul')
+    compile('org.springframework.cloud:spring-cloud-starter-netflix-eureka-client')
+~~~
+
+2. [zuul] `ZuulApplication`에 `@EnableZuulProxy`, `@EnableDiscoveryClient`
+~~~java
+@EnableZuulProxy
+@EnableDiscoveryClient
+@SpringBootApplication
+public class ZuulApplication {
+~~~
+
+3. [zuul] `application.yml` 설정
+~~~yaml
+spring:
+  application:
+    name: zuul
+
+server:
+  port: 8765
+
+zuul:
+  routes:
+    product:
+      path: /products/**
+      serviceId: product
+      stripPrefix: false
+    display:
+      path: /displays/**
+      serviceId: display
+      stripPrefix: false
+
+eureka:
+  instance:
+    non-secure-port: ${server.port}
+    prefer-ip-address: true
+  client:
+    serviceUrl:
+      defaultZone: http://localhost:8761/eureka/
+~~~
+
+4. 확인
+~~~
+http://localhost:8765/display/displays/1111
+http://localhost:8765/product/products/1111
+~~~
+
+### Spring Cloud Zuul - Isolation
+spring-cloud-zuul의 기본 Isolation은 SEMAPHORE(Netflix Zuul은 threadpool)
+* SEMAPHORE는 network timeout을 격리시켜주지 못함
+
+#### spring-cloud-zuul의 Isolation을 Thread로 변경
+
+~~~
+zuul.ribbon-isolation-strategy: thread
+zuul.thread-pool.useSeparateThreadPools: true
+zuul.thread-pool.threadPoolKeyPredix: zuulgw
+~~~
+
+* [zuul] `application.yml`에 설정 추가
+~~~ yaml
+zuul:
+  routes:
+    product:
+      path: /products/**
+      serviceId: product
+      stripPrefix: false
+    display:
+      path: /displays/**
+      serviceId: display
+      stripPrefix: false
+
+# here
+
+  ribbon-isolation-strategy: thread
+  thread-pool:
+    use-separate-thread-pools: true
+    thread-pool-key-prefix: zuul-
+
+hystrix:
+  command:
+    default:
+      execution:
+        isolation:
+          thread:
+            timeoutInMilliseconds: 1000
+    product:
+      execution:
+        isolation:
+          thread:
+            timeoutInMilliseconds: 10000
+  threadpool:
+    zuul-product:
+      coreSize: 30
+      maximumSize: 100
+      allowMaximumSizeToDivergeFromCoreSize: true
+    zuul-display:
+      coreSize: 30
+      maximumSize: 100
+      allowMaximumSizeToDivergeFromCoreSize: true
+
+product:
+  ribbon:
+    MaxAutoRetriesNextServer: 1
+    ReadTimeout: 3000
+    ConnectTimeout: 1000
+    MaxTotalConnections: 300
+    MaxConnectionsPerHost: 100
+
+display:
+  ribbon:
+    MaxAutoRetriesNextServer: 1
+    ReadTimeout: 3000
+    ConnectTimeout: 1000
+    MaxTotalConnections: 300
+    MaxConnectionsPerHost: 100
+~~~
+
+## 그 밖의 기능 들
+
+* Spring Cloud Config
+  * 중앙화 된 설정 서버
+* Zipkin, Spring Cloud Sleuth
